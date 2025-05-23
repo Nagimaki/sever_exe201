@@ -22,6 +22,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+
 # --- Models ---
 class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True)
@@ -34,23 +35,23 @@ class Employee(db.Model):
     title        = db.Column(db.String(120), nullable=False)
     total_shifts = db.Column(db.Integer, default=0)
     done_shifts  = db.Column(db.Integer, default=0)
-    rating       = db.Column(db.Float,   default=0.0)
+    rating       = db.Column(db.Float, default=0.0)
     on_time      = db.Column(db.Boolean, default=True)
 
 class Appointment(db.Model):
-    id        = db.Column(db.Integer, db.ForeignKey('appointment.id'), primary_key=True)
+    id        = db.Column(db.Integer, primary_key=True)
     user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    date      = db.Column(db.Date,    nullable=False)
+    date      = db.Column(db.Date, nullable=False)
     time      = db.Column(db.String(10), nullable=False)
     service   = db.Column(db.String(120), nullable=False)
 
 class Message(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     sender_id  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    content    = db.Column(db.Text,    nullable=False)
-    timestamp  = db.Column(db.DateTime, default=datetime.utcnow)
+    content    = db.Column(db.Text, nullable=False)
+    timestamp  = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# --- Tạo bảng (nếu chưa có) ---
+# --- Create tables at import time ---
 with app.app_context():
     db.create_all()
 
@@ -111,8 +112,7 @@ def appointments():
         appts = Appointment.query.all()
         return jsonify([{
             'id': a.id, 'user_id': a.user_id,
-            'date': a.date.isoformat(), 'time': a.time,
-            'service': a.service
+            'date': a.date.isoformat(), 'time': a.time, 'service': a.service
         } for a in appts])
     data = request.get_json() or {}
     a = Appointment(
@@ -139,7 +139,7 @@ def modify_appointment(app_id):
     db.session.commit()
     return jsonify({'success': True})
 
-# --- Chat Messages ---
+# --- Chat ---
 @app.route('/messages', methods=['GET','POST'])
 def messages():
     if request.method == 'GET':
@@ -161,11 +161,8 @@ def predict():
     result = 'anomaly' if 'image' in data else 'no image'
     return jsonify({'result': result})
 
-# --- Đăng ký Blueprint thanh toán ---
-# Tất cả route trong server_tri.py giờ có prefix /payment
-app.register_blueprint(tri_bp, url_prefix='/payment')
-
-# --- Chạy server ---
+# --- Run ---
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port)
+
