@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from payos import PaymentData, PayOS
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, redirect
 from flask_cors import cross_origin
 
 load_dotenv()
@@ -32,33 +32,35 @@ def load_history():
     return []
 
 def write_history(data):
-    json.dump(data, open(HISTORY_FILE, 'w', encoding='utf-8'),
-              ensure_ascii=False, indent=2)
+    json.dump(data,
+              open(HISTORY_FILE, 'w', encoding='utf-8'),
+              ensure_ascii=False,
+              indent=2)
 
 @tri_bp.route('/create', methods=['POST'])
-@cross_origin()  # cho phép gọi từ Flutter hoặc web
+@cross_origin()
 def create_payment():
     """
-    POST /payment/create
-    Body JSON: { "amount":5000, "description":"..." }
-    Response JSON: { "checkoutUrl":..., "orderCode":..., "paymentLinkId":... }
+    Tạo payment link. 
+    returnUrl/cancelUrl sẽ redirect về web để cập nhật lịch sử.
     """
+    base = request.host_url.rstrip('/')   # https://severexe201-production.up.railway.app
     body        = request.get_json() or {}
     amount      = body.get('amount', 5000)
     description = body.get('description', 'Demo thanh toán')
     order_code  = int(time.time())
 
-    # Tạo link PayOS, dùng deep-link scheme myapp://…
     pd = PaymentData(
         orderCode   = order_code,
         amount      = amount,
         description = description,
-        returnUrl   = f"myapp://payment-success?orderCode={order_code}",
-        cancelUrl   = f"myapp://payment-cancel?orderCode={order_code}"
+        # web return URLs
+        returnUrl   = f"{base}/payment/success?orderCode={order_code}",
+        cancelUrl   = f"{base}/payment/cancel?orderCode={order_code}"
     )
     res = payos.createPaymentLink(pd).to_json()
 
-    # Lưu lịch sử trạng thái PENDING
+    # lưu PENDING
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
     history = load_history()
     history.append({
@@ -77,11 +79,57 @@ def create_payment():
         "paymentLinkId": res["paymentLinkId"]
     })
 
+@tri_bp.route('/success', methods=['GET'])
+def payment_success_web():
+    """
+    PayOS redirect về khi thành công.
+    Query: ?orderCode=...
+    """
+    order_code = request.args.get('orderCode')
+    history    = load_history()
+    now_iso    = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+    for tx in history:
+        if str(tx.get("orderCode")) == str(order_code):
+            tx["statusCode"] = "SUCCESS"
+            tx["status"]     = STATUS_LABELS["SUCCESS"]
+            tx["updatedAt"]  = now_iso
+            break
+    write_history(history)
+
+    # Bạn có thể trả JSON hoặc render 1 trang nhỏ:
+    return jsonify({
+      "orderCode": order_code,
+      "status": "Thành công"
+    })
+
+@tri_bp.route('/cancel', methods=['GET'])
+def payment_cancel_web():
+    """
+    PayOS redirect về khi hủy.
+    """
+    order_code = request.args.get('orderCode')
+    history    = load_history()
+    now_iso    = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+    for tx in history:
+        if str(tx.get("orderCode")) == str(order_code):
+            tx["statusCode"] = "CANCELED"
+            tx["status"]     = STATUS_LABELS["CANCELED"]
+            tx["updatedAt"]  = now_iso
+            break
+    write_history(history)
+
+    return jsonify({
+      "orderCode": order_code,
+      "status": "Thất bại"
+    })
+
 @tri_bp.route('/webhook', methods=['POST'])
 def webhook():
     """
-    POST /payment/webhook
-    PayOS sẽ gửi callback khi trạng thái thay đổi
+    PayOS callback khi status thay đổi.
+    Bạn có thể dùng webhook thay vì /success để update.
     """
     data    = request.get_json(force=True)
     history = load_history()
@@ -94,7 +142,6 @@ def webhook():
             tx["status"]     = STATUS_LABELS.get(code, code)
             tx["updatedAt"]  = now_iso
             break
-
     write_history(history)
     return '', 200
 
@@ -102,9 +149,7 @@ def webhook():
 @cross_origin()
 def payment_history():
     """
-    GET /payment/history
-    Trả về lịch sử, trước đó:
-     - expire mọi PENDING >10 phút thành EXPIRED
+    Lấy lịch sử, expire PENDING > 10 phút.
     """
     history = load_history()
     now     = datetime.utcnow().replace(microsecond=0)
