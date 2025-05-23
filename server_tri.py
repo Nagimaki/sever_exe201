@@ -1,12 +1,16 @@
-from flask import Blueprint, request, jsonify
-import os, time, json
+# server_tri.py
+import os
+import time
+import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from payos import PaymentData, PayOS
+from flask import Blueprint, request, jsonify
+from flask_cors import cross_origin
 
 load_dotenv()
-tri_bp = Blueprint('tri', __name__)
 
+tri_bp = Blueprint('payment', __name__)
 payos = PayOS(
     client_id=os.getenv('PAYOS_CLIENT_ID'),
     api_key=os.getenv('PAYOS_API_KEY'),
@@ -28,21 +32,23 @@ def load_history():
     return []
 
 def write_history(data):
-    json.dump(data, open(HISTORY_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    json.dump(data, open(HISTORY_FILE, 'w', encoding='utf-8'),
+              ensure_ascii=False, indent=2)
 
-# --- Tạo Payment Link ---
-@app.route('/payment/create', methods=['POST'])
+@tri_bp.route('/create', methods=['POST'])
+@cross_origin()  # cho phép gọi từ Flutter hoặc web
 def create_payment():
     """
-    Body JSON: { "amount": 5000, "description": "..." }
-    Response JSON: { "checkoutUrl": "...", "orderCode": 1234567890, "paymentLinkId": "..." }
+    POST /payment/create
+    Body JSON: { "amount":5000, "description":"..." }
+    Response JSON: { "checkoutUrl":..., "orderCode":..., "paymentLinkId":... }
     """
-    body = request.get_json() or {}
+    body        = request.get_json() or {}
     amount      = body.get('amount', 5000)
-    description = body.get('description', 'Flutter Demo')
-    order_code  = int(time.time())  # mã duy nhất
+    description = body.get('description', 'Demo thanh toán')
+    order_code  = int(time.time())
 
-    # Tạo PaymentData, embed deep-link scheme vào returnUrl/cancelUrl
+    # Tạo link PayOS, dùng deep-link scheme myapp://…
     pd = PaymentData(
         orderCode   = order_code,
         amount      = amount,
@@ -52,8 +58,8 @@ def create_payment():
     )
     res = payos.createPaymentLink(pd).to_json()
 
-    # Lưu lịch sử mới với trạng thái PENDING
-    now = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    # Lưu lịch sử trạng thái PENDING
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
     history = load_history()
     history.append({
         "paymentLinkId": res["paymentLinkId"],
@@ -61,7 +67,7 @@ def create_payment():
         "amount":         res["amount"],
         "statusCode":     "PENDING",
         "status":         STATUS_LABELS["PENDING"],
-        "createdAt":      now
+        "createdAt":      now_iso
     })
     write_history(history)
 
@@ -71,38 +77,38 @@ def create_payment():
         "paymentLinkId": res["paymentLinkId"]
     })
 
-
-# --- Webhook từ PayOS ---
-@app.route('/payment/webhook', methods=['POST'])
+@tri_bp.route('/webhook', methods=['POST'])
 def webhook():
     """
-    Khi PayOS có event SUCCESS/CANCELED sẽ POST về đây.
+    POST /payment/webhook
+    PayOS sẽ gửi callback khi trạng thái thay đổi
     """
-    data = request.get_json(force=True)
+    data    = request.get_json(force=True)
     history = load_history()
-    now = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
 
     for tx in history:
         if tx.get("paymentLinkId") == data.get("paymentLinkId"):
             code = data.get("status")
             tx["statusCode"] = code
             tx["status"]     = STATUS_LABELS.get(code, code)
-            tx["updatedAt"]  = now
+            tx["updatedAt"]  = now_iso
             break
 
     write_history(history)
     return '', 200
 
-
-# --- Lấy lịch sử giao dịch ---
-@app.route('/payment/history', methods=['GET'])
+@tri_bp.route('/history', methods=['GET'])
+@cross_origin()
 def payment_history():
     """
-    Trước khi trả về, expire mọi PENDING > 10 phút thành EXPIRED.
+    GET /payment/history
+    Trả về lịch sử, trước đó:
+     - expire mọi PENDING >10 phút thành EXPIRED
     """
     history = load_history()
-    now = datetime.utcnow().replace(microsecond=0)
-    dirty = False
+    now     = datetime.utcnow().replace(microsecond=0)
+    dirty   = False
 
     for tx in history:
         created = datetime.fromisoformat(tx["createdAt"].rstrip('Z'))
@@ -116,9 +122,3 @@ def payment_history():
         write_history(history)
 
     return jsonify(history)
-
-
-if __name__ == '__main__':
-    # Cho phép override port qua env var PORT nếu cần
-    port = int(os.getenv('PORT', 4242))
-    app.run(host='0.0.0.0', port=port, debug=True)
