@@ -1,1 +1,2 @@
-web: gunicorn entrypoint:app --bind 0.0.0.0:$PORT
+web: gunicorn server:app --bind 0.0.0.0:$PORT
+
