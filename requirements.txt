@@ -3,3 +3,6 @@
  Flask-Cors>=3.0.10
  Werkzeug>=2.0
  gunicorn>=20.1.0
+ python-dotenv
+ payos
+ json
