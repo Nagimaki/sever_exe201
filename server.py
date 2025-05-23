@@ -1,124 +1,171 @@
-# server_tri.py
 import os
-import time
+import datetime
 import json
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from payos import PaymentData, PayOS
-from flask import Blueprint, request, jsonify
-from flask_cors import cross_origin
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 
+# Import Blueprint thanh toán
+from server_tri import tri_bp                                      
+
+# --- Thiết lập App & CORS ---
 load_dotenv()
+app = Flask(__name__)
+CORS(app)
 
-tri_bp = Blueprint('payment', __name__)
-payos = PayOS(
-    client_id=os.getenv('PAYOS_CLIENT_ID'),
-    api_key=os.getenv('PAYOS_API_KEY'),
-    checksum_key=os.getenv('PAYOS_CHECKSUM_KEY')
-)
+# --- Cấu hình Database ---
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-HISTORY_FILE = 'history.json'
-STATUS_LABELS = {
-    'PENDING':  'Đang thanh toán',
-    'SUCCESS':  'Thành công',
-    'CANCELED': 'Thất bại',
-    'FAILED':   'Thất bại',
-    'EXPIRED':  'Thất bại'
-}
+# --- Models ---
+class User(db.Model):
+    id            = db.Column(db.Integer, primary_key=True)
+    email         = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
 
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        return json.load(open(HISTORY_FILE, 'r', encoding='utf-8'))
-    return []
+class Employee(db.Model):
+    id           = db.Column(db.Integer, primary_key=True)
+    name         = db.Column(db.String(120), nullable=False)
+    title        = db.Column(db.String(120), nullable=False)
+    total_shifts = db.Column(db.Integer, default=0)
+    done_shifts  = db.Column(db.Integer, default=0)
+    rating       = db.Column(db.Float,   default=0.0)
+    on_time      = db.Column(db.Boolean, default=True)
 
-def write_history(data):
-    json.dump(data, open(HISTORY_FILE, 'w', encoding='utf-8'),
-              ensure_ascii=False, indent=2)
+class Appointment(db.Model):
+    id        = db.Column(db.Integer, db.ForeignKey('appointment.id'), primary_key=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    date      = db.Column(db.Date,    nullable=False)
+    time      = db.Column(db.String(10), nullable=False)
+    service   = db.Column(db.String(120), nullable=False)
 
-@tri_bp.route('/create', methods=['POST'])
-@cross_origin()  # cho phép gọi từ Flutter hoặc web
-def create_payment():
-    """
-    POST /payment/create
-    Body JSON: { "amount":5000, "description":"..." }
-    Response JSON: { "checkoutUrl":..., "orderCode":..., "paymentLinkId":... }
-    """
-    body        = request.get_json() or {}
-    amount      = body.get('amount', 5000)
-    description = body.get('description', 'Demo thanh toán')
-    order_code  = int(time.time())
+class Message(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    sender_id  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    content    = db.Column(db.Text,    nullable=False)
+    timestamp  = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # Tạo link PayOS, dùng deep-link scheme myapp://…
-    pd = PaymentData(
-        orderCode   = order_code,
-        amount      = amount,
-        description = description,
-        returnUrl   = f"myapp://payment-success?orderCode={order_code}",
-        cancelUrl   = f"myapp://payment-cancel?orderCode={order_code}"
+# --- Tạo bảng (nếu chưa có) ---
+with app.app_context():
+    db.create_all()
+
+# --- Auth routes ---
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json() or {}
+    email, pwd = data.get('email'), data.get('password')
+    if not email or not pwd:
+        return jsonify({'success': False, 'message': 'Email & password required'}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({'success': False, 'message': 'Email already registered'}), 400
+    u = User(email=email, password_hash=generate_password_hash(pwd))
+    db.session.add(u); db.session.commit()
+    return jsonify({'success': True, 'user_id': u.id}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json() or {}
+    email, pwd = data.get('email'), data.get('password')
+    u = User.query.filter_by(email=email).first()
+    if u and check_password_hash(u.password_hash, pwd):
+        return jsonify({'success': True, 'user_id': u.id}), 200
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
+
+# --- Employee CRUD ---
+@app.route('/employees', methods=['GET', 'POST'])
+def employees():
+    if request.method == 'GET':
+        emps = Employee.query.all()
+        return jsonify([{
+            'id': e.id, 'name': e.name, 'title': e.title,
+            'total_shifts': e.total_shifts, 'done_shifts': e.done_shifts,
+            'rating': e.rating, 'on_time': e.on_time
+        } for e in emps])
+    data = request.get_json() or {}
+    e = Employee(**{k: data[k] for k in ('name','title') if k in data})
+    db.session.add(e); db.session.commit()
+    return jsonify({'id': e.id}), 201
+
+@app.route('/employees/<int:emp_id>', methods=['PUT','DELETE'])
+def modify_employee(emp_id):
+    e = Employee.query.get_or_404(emp_id)
+    if request.method == 'DELETE':
+        db.session.delete(e); db.session.commit()
+        return '', 204
+    data = request.get_json() or {}
+    for f in ('name','title','total_shifts','done_shifts','rating','on_time'):
+        if f in data:
+            setattr(e, f, data[f])
+    db.session.commit()
+    return jsonify({'success': True})
+
+# --- Appointment CRUD ---
+@app.route('/appointments', methods=['GET','POST'])
+def appointments():
+    if request.method == 'GET':
+        appts = Appointment.query.all()
+        return jsonify([{
+            'id': a.id, 'user_id': a.user_id,
+            'date': a.date.isoformat(), 'time': a.time,
+            'service': a.service
+        } for a in appts])
+    data = request.get_json() or {}
+    a = Appointment(
+        user_id = data['user_id'],
+        date    = datetime.date.fromisoformat(data['date']),
+        time    = data['time'],
+        service = data['service']
     )
-    res = payos.createPaymentLink(pd).to_json()
+    db.session.add(a); db.session.commit()
+    return jsonify({'id': a.id}), 201
 
-    # Lưu lịch sử trạng thái PENDING
-    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
-    history = load_history()
-    history.append({
-        "paymentLinkId": res["paymentLinkId"],
-        "orderCode":      res["orderCode"],
-        "amount":         res["amount"],
-        "statusCode":     "PENDING",
-        "status":         STATUS_LABELS["PENDING"],
-        "createdAt":      now_iso
-    })
-    write_history(history)
+@app.route('/appointments/<int:app_id>', methods=['PUT','DELETE'])
+def modify_appointment(app_id):
+    a = Appointment.query.get_or_404(app_id)
+    if request.method == 'DELETE':
+        db.session.delete(a); db.session.commit()
+        return '', 204
+    data = request.get_json() or {}
+    if 'date' in data:
+        a.date = datetime.date.fromisoformat(data['date'])
+    for f in ('time','service'):
+        if f in data:
+            setattr(a, f, data[f])
+    db.session.commit()
+    return jsonify({'success': True})
 
-    return jsonify({
-        "checkoutUrl":   res["checkoutUrl"],
-        "orderCode":     order_code,
-        "paymentLinkId": res["paymentLinkId"]
-    })
+# --- Chat Messages ---
+@app.route('/messages', methods=['GET','POST'])
+def messages():
+    if request.method == 'GET':
+        msgs = Message.query.order_by(Message.timestamp).all()
+        return jsonify([{
+            'id': m.id, 'sender_id': m.sender_id,
+            'content': m.content, 'timestamp': m.timestamp.isoformat()
+        } for m in msgs])
+    data = request.get_json() or {}
+    m = Message(sender_id=data['sender_id'], content=data['content'])
+    db.session.add(m); db.session.commit()
+    return jsonify({'id': m.id}), 201
 
-@tri_bp.route('/webhook', methods=['POST'])
-def webhook():
-    """
-    POST /payment/webhook
-    PayOS sẽ gửi callback khi trạng thái thay đổi
-    """
-    data    = request.get_json(force=True)
-    history = load_history()
-    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+# --- Image analysis stub ---
+@app.route('/predict', methods=['POST'])
+def predict():
+    data = request.get_json() or {}
+    # TODO: integrate real model here
+    result = 'anomaly' if 'image' in data else 'no image'
+    return jsonify({'result': result})
 
-    for tx in history:
-        if tx.get("paymentLinkId") == data.get("paymentLinkId"):
-            code = data.get("status")
-            tx["statusCode"] = code
-            tx["status"]     = STATUS_LABELS.get(code, code)
-            tx["updatedAt"]  = now_iso
-            break
+# --- Đăng ký Blueprint thanh toán ---
+# Tất cả route trong server_tri.py giờ có prefix /payment
+app.register_blueprint(tri_bp, url_prefix='/payment')
 
-    write_history(history)
-    return '', 200
-
-@tri_bp.route('/history', methods=['GET'])
-@cross_origin()
-def payment_history():
-    """
-    GET /payment/history
-    Trả về lịch sử, trước đó:
-     - expire mọi PENDING >10 phút thành EXPIRED
-    """
-    history = load_history()
-    now     = datetime.utcnow().replace(microsecond=0)
-    dirty   = False
-
-    for tx in history:
-        created = datetime.fromisoformat(tx["createdAt"].rstrip('Z'))
-        if tx["statusCode"] == "PENDING" and now - created > timedelta(minutes=10):
-            tx["statusCode"] = "EXPIRED"
-            tx["status"]     = STATUS_LABELS["EXPIRED"]
-            tx["updatedAt"]  = now.isoformat() + 'Z'
-            dirty = True
-
-    if dirty:
-        write_history(history)
-
-    return jsonify(history)
+# --- Chạy server ---
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
