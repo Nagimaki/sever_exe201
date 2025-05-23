@@ -1,16 +1,11 @@
-import os
-import time
-import json
+from flask import Blueprint, request, jsonify
+import os, time, json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from payos import PaymentData, PayOS
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 
-# --- Load env & init ---
 load_dotenv()
-app = Flask(__name__)
-CORS(app)  # Cho phép gọi từ Flutter
+tri_bp = Blueprint('tri', __name__)
 
 payos = PayOS(
     client_id=os.getenv('PAYOS_CLIENT_ID'),
