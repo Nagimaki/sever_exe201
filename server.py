@@ -47,6 +47,29 @@ class Message(db.Model):
 with app.app_context():
     db.create_all()
 
+# --- Auth routes ---
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json() or {}
+    email, pwd = data.get('email'), data.get('password')
+    if not email or not pwd:
+        return jsonify({'success': False, 'message': 'Email & password required'}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({'success': False, 'message': 'Email already registered'}), 400
+    u = User(email=email, password_hash=generate_password_hash(pwd))
+    db.session.add(u)
+    db.session.commit()
+    return jsonify({'success': True, 'user_id': u.id}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json() or {}
+    email, pwd = data.get('email'), data.get('password')
+    u = User.query.filter_by(email=email).first()
+    if u and check_password_hash(u.password_hash, pwd):
+        return jsonify({'success': True, 'user_id': u.id}), 200
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
+
 # --- Employee CRUD ---
 @app.route('/employees', methods=['GET', 'POST'])
 def employees():
