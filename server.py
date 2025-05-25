@@ -43,65 +43,65 @@ class Message(db.Model):
     content    = db.Column(db.Text,    nullable=False)
     timestamp  = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# --- Tạo bảng nếu chưa có ---
+# --- Create tables if not exist ---
 with app.app_context():
     db.create_all()
 
-# --- Auth routes ---
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.get_json() or {}
-    email, pwd = data.get('email'), data.get('password')
-    if not email or not pwd:
-        return jsonify({'success': False, 'message': 'Email & password required'}), 400
-    if User.query.filter_by(email=email).first():
-        return jsonify({'success': False, 'message': 'Email already registered'}), 400
-    u = User(email=email, password_hash=generate_password_hash(pwd))
-    db.session.add(u)
-    db.session.commit()
-    return jsonify({'success': True, 'user_id': u.id}), 201
-
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json() or {}
-    email, pwd = data.get('email'), data.get('password')
-    u = User.query.filter_by(email=email).first()
-    if u and check_password_hash(u.password_hash, pwd):
-        return jsonify({'success': True, 'user_id': u.id}), 200
-    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-
 # --- Employee CRUD ---
-@app.route('/employees', methods=['GET','POST'])
+@app.route('/employees', methods=['GET', 'POST'])
 def employees():
     if request.method == 'GET':
         emps = Employee.query.all()
-        return jsonify([{
-            'id': e.id, 'name': e.name, 'title': e.title,
-            'total_shifts': e.total_shifts, 'done_shifts': e.done_shifts,
-            'rating': e.rating, 'on_time': e.on_time
-        } for e in emps])
+        result = []
+        for e in emps:
+            percentage = (e.done_shifts / e.total_shifts * 100) if e.total_shifts > 0 else 0
+            result.append({
+                'id': e.id,
+                'name': e.name,
+                'title': e.title,
+                'totalShifts': e.total_shifts,
+                'doneShifts': e.done_shifts,
+                'rating': e.rating,
+                'onTime': e.on_time,
+                'percentage': round(percentage, 1),
+            })
+        return jsonify(result)
+
+    # POST: create new employee with optional fields
     data = request.get_json() or {}
-    e = Employee(**{k: data[k] for k in ('name','title') if k in data})
+    e = Employee(
+        name         = data.get('name', ''),
+        title        = data.get('title', ''),
+        total_shifts = data.get('totalShifts', 0),
+        done_shifts  = data.get('doneShifts', 0),
+        rating       = data.get('rating', 0.0),
+        on_time      = data.get('onTime', True),
+    )
     db.session.add(e)
     db.session.commit()
     return jsonify({'id': e.id}), 201
 
-@app.route('/employees/<int:emp_id>', methods=['PUT','DELETE'])
+@app.route('/employees/<int:emp_id>', methods=['PUT', 'DELETE'])
 def modify_employee(emp_id):
     e = Employee.query.get_or_404(emp_id)
     if request.method == 'DELETE':
         db.session.delete(e)
         db.session.commit()
         return '', 204
+
+    # PUT: update allowed fields
     data = request.get_json() or {}
-    for f in ('name','title','total_shifts','done_shifts','rating','on_time'):
-        if f in data:
-            setattr(e, f, data[f])
+    if 'name' in data:        e.name         = data['name']
+    if 'title' in data:       e.title        = data['title']
+    if 'totalShifts' in data: e.total_shifts = data['totalShifts']
+    if 'doneShifts' in data:  e.done_shifts  = data['doneShifts']
+    if 'rating' in data:      e.rating       = data['rating']
+    if 'onTime' in data:      e.on_time      = data['onTime']
     db.session.commit()
     return jsonify({'success': True})
 
 # --- Appointment CRUD ---
-@app.route('/appointments', methods=['GET','POST'])
+@app.route('/appointments', methods=['GET', 'POST'])
 def appointments():
     if request.method == 'GET':
         appts = Appointment.query.all()
@@ -123,7 +123,7 @@ def appointments():
     db.session.commit()
     return jsonify({'id': a.id}), 201
 
-@app.route('/appointments/<int:app_id>', methods=['PUT','DELETE'])
+@app.route('/appointments/<int:app_id>', methods=['PUT', 'DELETE'])
 def modify_appointment(app_id):
     a = Appointment.query.get_or_404(app_id)
     if request.method == 'DELETE':
@@ -133,14 +133,14 @@ def modify_appointment(app_id):
     data = request.get_json() or {}
     if 'date' in data:
         a.date = datetime.date.fromisoformat(data['date'])
-    for f in ('time','service'):
+    for f in ('time', 'service'):
         if f in data:
             setattr(a, f, data[f])
     db.session.commit()
     return jsonify({'success': True})
 
 # --- Chat Messages ---
-@app.route('/messages', methods=['GET','POST'])
+@app.route('/messages', methods=['GET', 'POST'])
 def messages():
     if request.method == 'GET':
         msgs = Message.query.order_by(Message.timestamp).all()
