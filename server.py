@@ -13,6 +13,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
 
+# --- Model User (có field role) ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -20,6 +21,7 @@ class User(db.Model):
     role = db.Column(db.String(20), nullable=False, default="employee")
 
 
+# --- Model Employee ---
 class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
@@ -39,10 +41,11 @@ class Employee(db.Model):
             "totalShifts": self.total_shifts,
             "doneShifts": self.done_shifts,
             "rating": self.rating,
-            "onTime": self.on_time
+            "onTime": self.on_time,
         }
 
 
+# --- Các model Appointment, Message giữ nguyên ---
 class Appointment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False)
@@ -62,6 +65,7 @@ with app.app_context():
     db.create_all()
 
 
+# --- Decorator bắt buộc role=manager ---
 def require_manager(f):
     def wrapper(*args, **kwargs):
         user_id = request.headers.get("X-User-Id")
@@ -75,22 +79,26 @@ def require_manager(f):
     return wrapper
 
 
+# --- Route ĐĂNG KÝ (POST /register) ---
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-    role = data.get("role", "employee")
+    role = data.get("role", "employee")  # Lấy role từ payload, mặc định "employee"
+
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({"error": "Username already exists"}), 409
 
+    # Tạo user với đúng role
     new_user = User(username=username, password=password, role=role)
     db.session.add(new_user)
     db.session.commit()
 
+    # Tạo luôn nhân viên liên kết (tên nhân viên = chính username)
     new_emp = Employee(
         user_id=new_user.id,
         name=username,
@@ -111,6 +119,7 @@ def register():
     }), 201
 
 
+# --- Route ĐĂNG NHẬP (POST /login) ---
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -131,6 +140,7 @@ def login():
     }), 200
 
 
+# --- CRUD Employee ---
 @app.route("/employees", methods=["GET"])
 @require_manager
 def get_all_employees():
@@ -204,6 +214,8 @@ def delete_employee(emp_id):
     return jsonify({"success": True}), 200
 
 
+# --- Các route khác giữ nguyên (appointments, messages, predict) ---
+
 @app.route("/appointments", methods=["GET"])
 def get_appointments():
     apps = Appointment.query.all()
@@ -214,7 +226,6 @@ def get_appointments():
         "time": a.time,
         "service": a.service
     } for a in apps]), 200
-
 
 @app.route("/appointments", methods=["POST"])
 def create_appointment():
@@ -236,7 +247,6 @@ def create_appointment():
         "service": new_app.service
     }), 201
 
-
 @app.route("/appointments/<int:app_id>", methods=["PUT"])
 def update_appointment(app_id):
     a = Appointment.query.get(app_id)
@@ -255,7 +265,6 @@ def update_appointment(app_id):
         "service": a.service
     }), 200
 
-
 @app.route("/appointments/<int:app_id>", methods=["DELETE"])
 def delete_appointment(app_id):
     a = Appointment.query.get(app_id)
@@ -264,7 +273,6 @@ def delete_appointment(app_id):
     db.session.delete(a)
     db.session.commit()
     return jsonify({"success": True}), 200
-
 
 @app.route("/messages", methods=["GET"])
 def get_messages():
@@ -275,7 +283,6 @@ def get_messages():
         "content": m.content,
         "timestamp": m.timestamp.isoformat()
     } for m in msgs]), 200
-
 
 @app.route("/messages", methods=["POST"])
 def create_message():
@@ -293,7 +300,6 @@ def create_message():
         "content": new_msg.content,
         "timestamp": new_msg.timestamp.isoformat()
     }), 201
-
 
 @app.route("/predict", methods=["POST"])
 def predict():
