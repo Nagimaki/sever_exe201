@@ -12,19 +12,17 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-
-# --- Model User (có field role) ---
+# --- User model with roles: 'admin' hoặc 'employee' ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default="employee")
+    role = db.Column(db.String(20), nullable=False)  # 'admin' hoặc 'employee'
 
-
-# --- Model Employee ---
+# --- Employee model liên kết với User ---
 class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     title = db.Column(db.String(100), nullable=False)
     total_shifts = db.Column(db.Integer, default=0)
@@ -41,11 +39,10 @@ class Employee(db.Model):
             "totalShifts": self.total_shifts,
             "doneShifts": self.done_shifts,
             "rating": self.rating,
-            "onTime": self.on_time,
+            "onTime": self.on_time
         }
 
-
-# --- Các model Appointment, Message giữ nguyên ---
+# Các model Appointment và Message giữ nguyên
 class Appointment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False)
@@ -53,62 +50,42 @@ class Appointment(db.Model):
     time = db.Column(db.String(20), nullable=False)
     service = db.Column(db.String(100), nullable=False)
 
-
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_id = db.Column(db.Integer, nullable=False)
     content = db.Column(db.String(500), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-
 with app.app_context():
     db.create_all()
 
-
-# --- Decorator bắt buộc role=manager ---
-def require_manager(f):
+# --- Decorator để chỉ admin mới được gọi ---
+def require_admin(f):
     def wrapper(*args, **kwargs):
         user_id = request.headers.get("X-User-Id")
         if not user_id:
             return jsonify({"error": "Missing user ID"}), 401
         user = User.query.get(int(user_id))
-        if not user or user.role != "manager":
+        if not user or user.role != "admin":
             return jsonify({"error": "Unauthorized"}), 403
         return f(*args, **kwargs)
     wrapper.__name__ = f.__name__
     return wrapper
 
-
-# --- Route ĐĂNG KÝ (POST /register) ---
+# --- Route ĐĂNG KÝ ADMIN (mặc định tạo admin) ---
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-    role = data.get("role", "employee")  # Lấy role từ payload, mặc định "employee"
-
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({"error": "Username already exists"}), 409
 
-    # Tạo user với đúng role
-    new_user = User(username=username, password=password, role=role)
+    new_user = User(username=username, password=password, role="admin")
     db.session.add(new_user)
-    db.session.commit()
-
-    # Tạo luôn nhân viên liên kết (tên nhân viên = chính username)
-    new_emp = Employee(
-        user_id=new_user.id,
-        name=username,
-        title="Nhân viên",
-        total_shifts=0,
-        done_shifts=0,
-        rating=0.0,
-        on_time=True
-    )
-    db.session.add(new_emp)
     db.session.commit()
 
     return jsonify({
@@ -118,8 +95,7 @@ def register():
         "role": new_user.role
     }), 201
 
-
-# --- Route ĐĂNG NHẬP (POST /login) ---
+# --- Route ĐĂNG NHẬP ---
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -139,15 +115,50 @@ def login():
         "role": user.role
     }), 200
 
+# --- Admin tạo tài khoản nhân viên (POST /employees) ---
+@app.route("/employees", methods=["POST"])
+@require_admin
+def create_employee():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    name = data.get("name")
+    title = data.get("title")
 
-# --- CRUD Employee ---
+    if not username or not password or not name or not title:
+        return jsonify({"error": "Missing fields"}), 400
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"error": "Employee username already exists"}), 409
+
+    # Tạo User cho nhân viên
+    new_user = User(username=username, password=password, role="employee")
+    db.session.add(new_user)
+    db.session.commit()
+
+    # Tạo Employee liên kết
+    new_emp = Employee(
+        user_id=new_user.id,
+        name=name,
+        title=title,
+        total_shifts=0,
+        done_shifts=0,
+        rating=0.0,
+        on_time=True
+    )
+    db.session.add(new_emp)
+    db.session.commit()
+
+    return jsonify(new_emp.to_dict()), 201
+
+# --- Admin xem danh sách toàn bộ nhân viên ---
 @app.route("/employees", methods=["GET"])
-@require_manager
+@require_admin
 def get_all_employees():
     emps = Employee.query.all()
     return jsonify([e.to_dict() for e in emps]), 200
 
-
+# --- Nhân viên xem thông tin cá nhân ---
 @app.route("/employees/<int:user_id>", methods=["GET"])
 def get_employee_by_user(user_id):
     emp = Employee.query.filter_by(user_id=user_id).first()
@@ -155,38 +166,9 @@ def get_employee_by_user(user_id):
         return jsonify({"error": "Employee not found"}), 404
     return jsonify(emp.to_dict()), 200
 
-
-@app.route("/employees", methods=["POST"])
-@require_manager
-def create_employee():
-    data = request.get_json()
-    name = data.get("name")
-    title = data.get("title")
-    total_shifts = data.get("totalShifts", 0)
-    done_shifts = data.get("doneShifts", 0)
-    rating = data.get("rating", 0.0)
-    on_time = data.get("onTime", True)
-    user_id = data.get("userId", None)
-
-    if not name or not title:
-        return jsonify({"error": "Name and title required"}), 400
-
-    new_emp = Employee(
-        user_id=user_id,
-        name=name,
-        title=title,
-        total_shifts=total_shifts,
-        done_shifts=done_shifts,
-        rating=rating,
-        on_time=on_time
-    )
-    db.session.add(new_emp)
-    db.session.commit()
-    return jsonify(new_emp.to_dict()), 201
-
-
+# --- Admin cập nhật thông tin nhân viên (PUT /employees/<id>) ---
 @app.route("/employees/<int:emp_id>", methods=["PUT"])
-@require_manager
+@require_admin
 def update_employee(emp_id):
     emp = Employee.query.get(emp_id)
     if not emp:
@@ -202,19 +184,23 @@ def update_employee(emp_id):
     db.session.commit()
     return jsonify(emp.to_dict()), 200
 
-
+# --- Admin xóa nhân viên ---
 @app.route("/employees/<int:emp_id>", methods=["DELETE"])
-@require_manager
+@require_admin
 def delete_employee(emp_id):
     emp = Employee.query.get(emp_id)
     if not emp:
         return jsonify({"error": "Employee not found"}), 404
+
+    # Đồng thời xóa cả User liên kết
+    user = User.query.get(emp.user_id)
     db.session.delete(emp)
+    if user:
+        db.session.delete(user)
     db.session.commit()
     return jsonify({"success": True}), 200
 
-
-# --- Các route khác giữ nguyên (appointments, messages, predict) ---
+# --- Các route Appointment, Message, Predict giữ nguyên --- 
 
 @app.route("/appointments", methods=["GET"])
 def get_appointments():
@@ -307,7 +293,6 @@ def predict():
     if not data:
         return jsonify({"result": "no image"}), 200
     return jsonify({"result": "anomaly"}), 200
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
