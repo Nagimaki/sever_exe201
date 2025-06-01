@@ -1,6 +1,6 @@
 # server.py
 
-from flask import Flask, request, jsonify, Blueprint
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
@@ -8,23 +8,18 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# --- Cấu hình database ---
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"  # (ví dụ)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
 
-# --- Model User (thêm trường role) ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="employee")
-    # Nếu muốn, có thể định nghĩa thêm quan hệ tới Employee
-    # employee = db.relationship("Employee", backref="user", uselist=False)
 
 
-# --- Model Employee (giữ nguyên, nhưng nên có user_id) ---
 class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
@@ -48,7 +43,6 @@ class Employee(db.Model):
         }
 
 
-# --- Model Appointment ---
 class Appointment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=False)
@@ -57,7 +51,6 @@ class Appointment(db.Model):
     service = db.Column(db.String(100), nullable=False)
 
 
-# --- Model Message ---
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_id = db.Column(db.Integer, nullable=False)
@@ -65,12 +58,10 @@ class Message(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-# --- Khởi tạo database (nếu cần) ---
 with app.app_context():
     db.create_all()
 
 
-# --- Helper: kiểm tra role (chỉ ví dụ) ---
 def require_manager(f):
     def wrapper(*args, **kwargs):
         user_id = request.headers.get("X-User-Id")
@@ -84,33 +75,26 @@ def require_manager(f):
     return wrapper
 
 
-# --- Route: Đăng ký (POST /register) ---
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-    # Nếu muốn, có thể cho phép truyền role từ client (nhưng chỉ admin có thể tạo manager)
-    # role = data.get("role", "employee")
+    role = data.get("role", "employee")
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({"error": "Username already exists"}), 409
 
-    new_user = User(
-        username=username,
-        password=password,
-        role="employee"  # mặc định tạo user với role employee
-    )
+    new_user = User(username=username, password=password, role=role)
     db.session.add(new_user)
     db.session.commit()
 
-    # Tạo luôn bản ghi Employee (liên kết qua user_id)
     new_emp = Employee(
         user_id=new_user.id,
         name=username,
-        title="Nhân viên",  # mặc định title, có thể chỉnh sau
+        title="Nhân viên",
         total_shifts=0,
         done_shifts=0,
         rating=0.0,
@@ -127,7 +111,6 @@ def register():
     }), 201
 
 
-# --- Route: Đăng nhập (POST /login) ---
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -140,7 +123,6 @@ def login():
     if not user:
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # Trả về role để frontend phân quyền
     return jsonify({
         "success": True,
         "userId": user.id,
@@ -149,7 +131,6 @@ def login():
     }), 200
 
 
-# --- Route: Lấy tất cả nhân viên (GET /employees) ---
 @app.route("/employees", methods=["GET"])
 @require_manager
 def get_all_employees():
@@ -157,7 +138,6 @@ def get_all_employees():
     return jsonify([e.to_dict() for e in emps]), 200
 
 
-# --- Route: Lấy thông tin nhân viên theo user_id (GET /employees/<user_id>) ---
 @app.route("/employees/<int:user_id>", methods=["GET"])
 def get_employee_by_user(user_id):
     emp = Employee.query.filter_by(user_id=user_id).first()
@@ -166,7 +146,6 @@ def get_employee_by_user(user_id):
     return jsonify(emp.to_dict()), 200
 
 
-# --- Route: Tạo nhân viên mới (POST /employees) ---
 @app.route("/employees", methods=["POST"])
 @require_manager
 def create_employee():
@@ -177,7 +156,7 @@ def create_employee():
     done_shifts = data.get("doneShifts", 0)
     rating = data.get("rating", 0.0)
     on_time = data.get("onTime", True)
-    user_id = data.get("userId", None)  # nếu muốn liên kết với User
+    user_id = data.get("userId", None)
 
     if not name or not title:
         return jsonify({"error": "Name and title required"}), 400
@@ -196,7 +175,6 @@ def create_employee():
     return jsonify(new_emp.to_dict()), 201
 
 
-# --- Route: Cập nhật nhân viên (PUT /employees/<id>) ---
 @app.route("/employees/<int:emp_id>", methods=["PUT"])
 @require_manager
 def update_employee(emp_id):
@@ -215,7 +193,6 @@ def update_employee(emp_id):
     return jsonify(emp.to_dict()), 200
 
 
-# --- Route: Xóa nhân viên (DELETE /employees/<id>) ---
 @app.route("/employees/<int:emp_id>", methods=["DELETE"])
 @require_manager
 def delete_employee(emp_id):
@@ -227,7 +204,6 @@ def delete_employee(emp_id):
     return jsonify({"success": True}), 200
 
 
-# --- Routes Appointment CRUD (giữ nguyên) ---
 @app.route("/appointments", methods=["GET"])
 def get_appointments():
     apps = Appointment.query.all()
@@ -249,12 +225,7 @@ def create_appointment():
     service = data.get("service")
     if not user_id or not date or not time or not service:
         return jsonify({"error": "Missing fields"}), 400
-    new_app = Appointment(
-        user_id=user_id,
-        date=date,
-        time=time,
-        service=service
-    )
+    new_app = Appointment(user_id=user_id, date=date, time=time, service=service)
     db.session.add(new_app)
     db.session.commit()
     return jsonify({
@@ -295,7 +266,6 @@ def delete_appointment(app_id):
     return jsonify({"success": True}), 200
 
 
-# --- Routes Message (giữ nguyên) ---
 @app.route("/messages", methods=["GET"])
 def get_messages():
     msgs = Message.query.order_by(Message.timestamp.asc()).all()
@@ -325,17 +295,13 @@ def create_message():
     }), 201
 
 
-# --- Route Predict (giữ nguyên stub) ---
 @app.route("/predict", methods=["POST"])
 def predict():
-    # Đây là stub; giả sử nhận {"content": "..."} hoặc ảnh base64
     data = request.get_json()
     if not data:
         return jsonify({"result": "no image"}), 200
-    # Luồng xử lý phân tích ảnh, text... ở đây (hiện tại trả dummy)
     return jsonify({"result": "anomaly"}), 200
 
 
-# --- Chạy app (chỉ cho dev) ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
