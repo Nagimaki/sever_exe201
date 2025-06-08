@@ -4,20 +4,20 @@ import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from payos import PaymentData, PayOS
-from flask import Flask, Blueprint, request, jsonify, redirect
+from flask import Flask, Blueprint, request, jsonify
 from flask_cors import CORS, cross_origin
 
 # Load environment variables
 load_dotenv()
 
-# PayOS client setup
+# PayOS client configuration
 pos_client = PayOS(
     client_id=os.getenv('PAYOS_CLIENT_ID'),
     api_key=os.getenv('PAYOS_API_KEY'),
     checksum_key=os.getenv('PAYOS_CHECKSUM_KEY')
 )
 
-# History storage
+# File for persisting payment history
 HISTORY_FILE = 'history.json'
 STATUS_LABELS = {
     'PENDING':  'Đang thanh toán',
@@ -26,6 +26,8 @@ STATUS_LABELS = {
     'FAILED':   'Thất bại',
     'EXPIRED':  'Thất bại'
 }
+
+# Utility functions
 
 def load_history():
     try:
@@ -39,25 +41,28 @@ def write_history(data):
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Blueprint for payment routes
+# Define Blueprint for payment routes
 payment_bp = Blueprint('payment', __name__)
 
 @payment_bp.route('/create', methods=['POST'])
 @cross_origin()
 def create_payment():
-    # Build base URL for return/cancel links
-    base = request.host_url.rstrip('/')
-    body = request.get_json() or {}
-    amount = body.get('amount', 5000)
-    description = body.get('description', 'Demo thanh toán')
+    """
+    Tạo đường dẫn thanh toán.
+    returnUrl và cancelUrl sẽ gọi lại endpoint /payment/success hoặc /payment/cancel
+    """
+    base_url = request.host_url.rstrip('/')
+    data = request.get_json() or {}
+    amount = data.get('amount', 5000)
+    description = data.get('description', 'Demo thanh toán')
     order_code = int(time.time())
 
     pd = PaymentData(
         orderCode=order_code,
         amount=amount,
         description=description,
-        returnUrl=f"{base}/payment/success?orderCode={order_code}",
-        cancelUrl=f"{base}/payment/cancel?orderCode={order_code}"
+        returnUrl=f"{base_url}/payment/success?orderCode={order_code}",
+        cancelUrl=f"{base_url}/payment/cancel?orderCode={order_code}"
     )
     res = pos_client.createPaymentLink(pd).to_json()
 
@@ -83,7 +88,7 @@ def create_payment():
 @payment_bp.route('/success', methods=['GET'])
 @cross_origin()
 def payment_success():
-    # Callback when payment succeeds
+    """Callback khi thanh toán thành công."""
     order_code = request.args.get('orderCode')
     history = load_history()
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
@@ -99,7 +104,7 @@ def payment_success():
 @payment_bp.route('/cancel', methods=['GET'])
 @cross_origin()
 def payment_cancel():
-    # Callback when payment is cancelled
+    """Callback khi thanh toán bị hủy."""
     order_code = request.args.get('orderCode')
     history = load_history()
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
@@ -115,7 +120,7 @@ def payment_cancel():
 @payment_bp.route('/webhook', methods=['POST'])
 @cross_origin()
 def payment_webhook():
-    # Webhook from PayOS when status updates
+    """Webhook callback khi trạng thái thanh toán thay đổi."""
     data = request.get_json(force=True)
     history = load_history()
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
@@ -132,10 +137,10 @@ def payment_webhook():
 @payment_bp.route('/history', methods=['GET'])
 @cross_origin()
 def payment_history():
-    # Return transaction history and expire old PENDING
+    """Lấy lịch sử giao dịch và tự động expire các PENDING >10 phút."""
     history = load_history()
     now = datetime.utcnow().replace(microsecond=0)
-    dirty = False
+    updated = False
     for tx in history:
         if tx.get('statusCode') == 'PENDING':
             created = datetime.fromisoformat(tx['createdAt'].rstrip('Z'))
@@ -143,20 +148,20 @@ def payment_history():
                 tx['statusCode'] = 'EXPIRED'
                 tx['status'] = STATUS_LABELS['EXPIRED']
                 tx['updatedAt'] = now.isoformat() + 'Z'
-                dirty = True
-    if dirty:
+                updated = True
+    if updated:
         write_history(history)
     return jsonify(history)
 
 
 def create_app():
+    """Factory to create Flask app with payment routes."""
     app = Flask(__name__)
     CORS(app)
-    app.register_blueprint(payment_bp, url_prefix='/payment')
+    app.register_blueprint(payment_bp)  # register without prefix
     return app
 
-# Application entry point
-a
+# Create WSGI application
 app = create_app()
 
 if __name__ == '__main__':
