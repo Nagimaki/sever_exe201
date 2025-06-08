@@ -1,26 +1,23 @@
-# server_tri.py
 import os
 import time
 import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from payos import PaymentData, PayOS
-from flask import Blueprint, request, jsonify, redirect
-from flask_cors import cross_origin
+from flask import Flask, Blueprint, request, jsonify, redirect
+from flask_cors import CORS, cross_origin
 
+# Load environment variables
 load_dotenv()
 
-tri_bp = Blueprint('payment', __name__)
-app = Flask(__name__)
-CORS(app)
-app.register_blueprint(tri_bp, url_prefix='/payment')
-
-payos = PayOS(
+# PayOS client setup
+pos_client = PayOS(
     client_id=os.getenv('PAYOS_CLIENT_ID'),
     api_key=os.getenv('PAYOS_API_KEY'),
     checksum_key=os.getenv('PAYOS_CHECKSUM_KEY')
 )
 
+# History storage
 HISTORY_FILE = 'history.json'
 STATUS_LABELS = {
     'PENDING':  'Đang thanh toán',
@@ -31,143 +28,137 @@ STATUS_LABELS = {
 }
 
 def load_history():
-    if os.path.exists(HISTORY_FILE):
-        return json.load(open(HISTORY_FILE, 'r', encoding='utf-8'))
-    return []
+    try:
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
 
 def write_history(data):
-    json.dump(data,
-              open(HISTORY_FILE, 'w', encoding='utf-8'),
-              ensure_ascii=False,
-              indent=2)
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-@tri_bp.route('/create', methods=['POST'])
+# Blueprint for payment routes
+payment_bp = Blueprint('payment', __name__)
+
+@payment_bp.route('/create', methods=['POST'])
 @cross_origin()
 def create_payment():
-    """
-    Tạo payment link. 
-    returnUrl/cancelUrl sẽ redirect về web để cập nhật lịch sử.
-    """
-    base = request.host_url.rstrip('/')   # https://severexe201-production.up.railway.app
-    body        = request.get_json() or {}
-    amount      = body.get('amount', 5000)
+    # Build base URL for return/cancel links
+    base = request.host_url.rstrip('/')
+    body = request.get_json() or {}
+    amount = body.get('amount', 5000)
     description = body.get('description', 'Demo thanh toán')
-    order_code  = int(time.time())
+    order_code = int(time.time())
 
     pd = PaymentData(
-        orderCode   = order_code,
-        amount      = amount,
-        description = description,
-        # web return URLs
-        returnUrl   = f"{base}/payment/success?orderCode={order_code}",
-        cancelUrl   = f"{base}/payment/cancel?orderCode={order_code}"
+        orderCode=order_code,
+        amount=amount,
+        description=description,
+        returnUrl=f"{base}/payment/success?orderCode={order_code}",
+        cancelUrl=f"{base}/payment/cancel?orderCode={order_code}"
     )
-    res = payos.createPaymentLink(pd).to_json()
+    res = pos_client.createPaymentLink(pd).to_json()
 
-    # lưu PENDING
+    # Save initial PENDING status
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
     history = load_history()
     history.append({
-        "paymentLinkId": res["paymentLinkId"],
-        "orderCode":      res["orderCode"],
-        "amount":         res["amount"],
-        "statusCode":     "PENDING",
-        "status":         STATUS_LABELS["PENDING"],
-        "createdAt":      now_iso
+        'paymentLinkId': res['paymentLinkId'],
+        'orderCode': res['orderCode'],
+        'amount': res['amount'],
+        'statusCode': 'PENDING',
+        'status': STATUS_LABELS['PENDING'],
+        'createdAt': now_iso
     })
     write_history(history)
 
     return jsonify({
-        "checkoutUrl":   res["checkoutUrl"],
-        "orderCode":     order_code,
-        "paymentLinkId": res["paymentLinkId"]
+        'checkoutUrl': res['checkoutUrl'],
+        'orderCode': order_code,
+        'paymentLinkId': res['paymentLinkId']
     })
 
-@tri_bp.route('/success', methods=['GET'])
-def payment_success_web():
-    """
-    PayOS redirect về khi thành công.
-    Query: ?orderCode=...
-    """
+@payment_bp.route('/success', methods=['GET'])
+@cross_origin()
+def payment_success():
+    # Callback when payment succeeds
     order_code = request.args.get('orderCode')
-    history    = load_history()
-    now_iso    = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
-
-    for tx in history:
-        if str(tx.get("orderCode")) == str(order_code):
-            tx["statusCode"] = "SUCCESS"
-            tx["status"]     = STATUS_LABELS["SUCCESS"]
-            tx["updatedAt"]  = now_iso
-            break
-    write_history(history)
-
-    # Bạn có thể trả JSON hoặc render 1 trang nhỏ:
-    return jsonify({
-      "orderCode": order_code,
-      "status": "Thành công"
-    })
-
-@tri_bp.route('/cancel', methods=['GET'])
-def payment_cancel_web():
-    """
-    PayOS redirect về khi hủy.
-    """
-    order_code = request.args.get('orderCode')
-    history    = load_history()
-    now_iso    = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
-
-    for tx in history:
-        if str(tx.get("orderCode")) == str(order_code):
-            tx["statusCode"] = "CANCELED"
-            tx["status"]     = STATUS_LABELS["CANCELED"]
-            tx["updatedAt"]  = now_iso
-            break
-    write_history(history)
-
-    return jsonify({
-      "orderCode": order_code,
-      "status": "Thất bại"
-    })
-
-@tri_bp.route('/webhook', methods=['POST'])
-def webhook():
-    """
-    PayOS callback khi status thay đổi.
-    Bạn có thể dùng webhook thay vì /success để update.
-    """
-    data    = request.get_json(force=True)
     history = load_history()
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
-
     for tx in history:
-        if tx.get("paymentLinkId") == data.get("paymentLinkId"):
-            code = data.get("status")
-            tx["statusCode"] = code
-            tx["status"]     = STATUS_LABELS.get(code, code)
-            tx["updatedAt"]  = now_iso
+        if str(tx.get('orderCode')) == str(order_code):
+            tx['statusCode'] = 'SUCCESS'
+            tx['status'] = STATUS_LABELS['SUCCESS']
+            tx['updatedAt'] = now_iso
             break
     write_history(history)
-    return '', 200
+    return jsonify({'orderCode': order_code, 'status': STATUS_LABELS['SUCCESS']})
 
-@tri_bp.route('/history', methods=['GET'])
+@payment_bp.route('/cancel', methods=['GET'])
+@cross_origin()
+def payment_cancel():
+    # Callback when payment is cancelled
+    order_code = request.args.get('orderCode')
+    history = load_history()
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    for tx in history:
+        if str(tx.get('orderCode')) == str(order_code):
+            tx['statusCode'] = 'CANCELED'
+            tx['status'] = STATUS_LABELS['CANCELED']
+            tx['updatedAt'] = now_iso
+            break
+    write_history(history)
+    return jsonify({'orderCode': order_code, 'status': STATUS_LABELS['CANCELED']})
+
+@payment_bp.route('/webhook', methods=['POST'])
+@cross_origin()
+def payment_webhook():
+    # Webhook from PayOS when status updates
+    data = request.get_json(force=True)
+    history = load_history()
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+    for tx in history:
+        if tx.get('paymentLinkId') == data.get('paymentLinkId'):
+            code = data.get('status')
+            tx['statusCode'] = code
+            tx['status'] = STATUS_LABELS.get(code, code)
+            tx['updatedAt'] = now_iso
+            break
+    write_history(history)
+    return ('', 200)
+
+@payment_bp.route('/history', methods=['GET'])
 @cross_origin()
 def payment_history():
-    """
-    Lấy lịch sử, expire PENDING > 10 phút.
-    """
+    # Return transaction history and expire old PENDING
     history = load_history()
-    now     = datetime.utcnow().replace(microsecond=0)
-    dirty   = False
-
+    now = datetime.utcnow().replace(microsecond=0)
+    dirty = False
     for tx in history:
-        created = datetime.fromisoformat(tx["createdAt"].rstrip('Z'))
-        if tx["statusCode"] == "PENDING" and now - created > timedelta(minutes=10):
-            tx["statusCode"] = "EXPIRED"
-            tx["status"]     = STATUS_LABELS["EXPIRED"]
-            tx["updatedAt"]  = now.isoformat() + 'Z'
-            dirty = True
-
+        if tx.get('statusCode') == 'PENDING':
+            created = datetime.fromisoformat(tx['createdAt'].rstrip('Z'))
+            if now - created > timedelta(minutes=10):
+                tx['statusCode'] = 'EXPIRED'
+                tx['status'] = STATUS_LABELS['EXPIRED']
+                tx['updatedAt'] = now.isoformat() + 'Z'
+                dirty = True
     if dirty:
         write_history(history)
-
     return jsonify(history)
+
+
+def create_app():
+    app = Flask(__name__)
+    CORS(app)
+    app.register_blueprint(payment_bp, url_prefix='/payment')
+    return app
+
+# Application entry point
+a
+app = create_app()
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
