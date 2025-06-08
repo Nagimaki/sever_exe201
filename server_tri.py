@@ -11,6 +11,10 @@ from flask_cors import cross_origin
 load_dotenv()
 
 tri_bp = Blueprint('payment', __name__)
+app = Flask(__name__)
+CORS(app)
+app.register_blueprint(tri_bp, url_prefix='/payment')
+
 payos = PayOS(
     client_id=os.getenv('PAYOS_CLIENT_ID'),
     api_key=os.getenv('PAYOS_API_KEY'),
